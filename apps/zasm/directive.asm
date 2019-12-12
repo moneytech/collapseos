@@ -18,7 +18,7 @@
 ; *** CODE ***
 
 ; 3 bytes per row, fill with zero
-directiveNames:
+dirNames:
 	.db	"DB", 0
 	.db	"DW", 0
 	.db	"EQU"
@@ -28,8 +28,8 @@ directiveNames:
 	.db	"INC"
 	.db	"BIN"
 
-; This is a list of handlers corresponding to indexes in directiveNames
-directiveHandlers:
+; This is a list of handlers corresponding to indexes in dirNames
+dirHandlers:
 	.dw	handleDB
 	.dw	handleDW
 	.dw	handleEQU
@@ -54,7 +54,7 @@ handleDB:
 	or	a		; cp 0
 	jr	nz, .overflow	; not zero? overflow
 	ld	a, l
-	call	ioPutC
+	call	ioPutB
 	jr	nz, .ioError
 .stopStrLit:
 	call	readComma
@@ -84,7 +84,7 @@ handleDB:
 	or	a		; when we encounter 0, that was what used to
 	jr	z, .stopStrLit	; be our closing quote. Stop.
 	; Normal character, output
-	call	ioPutC
+	call	ioPutB
 	jr	nz, .ioError
 	jr	.stringLiteral
 
@@ -98,10 +98,10 @@ handleDW:
 	jr	nz, .badarg
 	push	ix \ pop hl
 	ld	a, l
-	call	ioPutC
+	call	ioPutB
 	jr	nz, .ioError
 	ld	a, h
-	call	ioPutC
+	call	ioPutB
 	jr	nz, .ioError
 	call	readComma
 	jr	z, .loop
@@ -184,6 +184,7 @@ handleORG:
 	call	parseExpr
 	jr	nz, .badarg
 	push	ix \ pop hl
+	ld	(DIREC_LASTVAL), hl
 	call	zasmSetOrg
 	cp	a		; ensure Z
 	ret
@@ -201,32 +202,37 @@ handleFIL:
 	jr	nz, .badfmt
 	call	parseExpr
 	jr	nz, .badarg
-	push	bc
+	push	bc	; --> lvl 1
 	push	ix \ pop bc
+	ld	a, b
+	cp	0xd0
+	jr	nc, .overflow
 .loop:
 	ld	a, b
 	or	c
 	jr	z, .loopend
 	xor	a
-	call	ioPutC
+	call	ioPutB
 	jr	nz, .ioError
 	dec	bc
 	jr	.loop
 .loopend:
-	cp	a		; ensure Z
-	pop	bc
+	cp	a	; ensure Z
+	pop	bc	; <-- lvl 1
 	ret
 .ioError:
 	ld	a, SHELL_ERR_IO_ERROR
-	jr	.error
+	jp	unsetZ
 .badfmt:
 	ld	a, ERR_BAD_FMT
-	jr	.error
+	jp	unsetZ
 .badarg:
 	ld	a, ERR_BAD_ARG
-.error:
-	call	unsetZ
-	ret
+	jp	unsetZ
+.overflow:
+	pop	bc	; <-- lvl 1
+	ld	a, ERR_OVFL
+	jp	unsetZ
 
 handleOUT:
 	push	hl
@@ -305,7 +311,7 @@ getDirectiveID:
 	inc	hl
 	ld	b, D_BIN+1		; D_BIN is last
 	ld	c, 3
-	ld	de, directiveNames
+	ld	de, dirNames
 	call	findStringInList
 	pop	de
 	pop	bc
@@ -314,14 +320,14 @@ getDirectiveID:
 
 ; Parse directive specified in A (D_* const) with args in I/O and act in
 ; an appropriate manner. If the directive results in writing data at its
-; current location, that data is directly written through ioPutC.
+; current location, that data is directly written through ioPutB.
 ; Each directive has the same return value pattern: Z on success, not-Z on
 ; error, A contains the error number (ERR_*).
 parseDirective:
 	push	de
-	; double A to have a proper offset in directiveHandlers
+	; double A to have a proper offset in dirHandlers
 	add	a, a
-	ld	de, directiveHandlers
+	ld	de, dirHandlers
 	call	addDE
 	call	intoDE
 	push	de \ pop ix

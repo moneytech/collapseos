@@ -5,9 +5,9 @@
 ;
 ; We don't buffer the whole source in memory, so we need our input blkdev to
 ; support Seek so we can read the file a second time. So, for input, we need
-; GetC and Seek.
+; GetB and Seek.
 ;
-; For output, we only need PutC. Output doesn't start until the second pass.
+; For output, we only need PutB. Output doesn't start until the second pass.
 ;
 ; The goal of the second pass is to assign values to all symbols so that we
 ; can have forward references (instructions referencing a label that happens
@@ -19,30 +19,18 @@
 ;
 ; *** Requirements ***
 ; strncmp
-; addDE
-; addHL
 ; upcase
-; unsetZ
-; intoDE
-; intoHL
-; writeHLinDE
 ; findchar
-; parseHex
-; parseHexPair
 ; blkSel
 ; blkSet
 ; fsFindFN
 ; fsOpen
-; fsGetC
-; cpHLDE
-; parseArgs
-; _blkGetC
-; _blkPutC
+; fsGetB
+; _blkGetB
+; _blkPutB
 ; _blkSeek
 ; _blkTell
 ; printstr
-; FS_HANDLE_SIZE
-; BLOCKDEV_SIZE
 
 .inc "user.h"
 
@@ -70,25 +58,31 @@
 ; ******
 
 .inc "err.h"
-.org	USER_CODE
-
+.inc "ascii.h"
+.inc "blkdev.h"
+.inc "fs.h"
 jp	zasmMain
 
+.inc "core.asm"
 .inc "zasm/const.asm"
 .inc "lib/util.asm"
+.inc "lib/ari.asm"
+.inc "lib/parse.asm"
+.inc "lib/args.asm"
 .inc "zasm/util.asm"
 .equ	IO_RAMSTART	USER_RAMSTART
 .inc "zasm/io.asm"
 .equ	TOK_RAMSTART	IO_RAMEND
 .inc "zasm/tok.asm"
-.inc "lib/parse.asm"
 .equ	INS_RAMSTART	TOK_RAMEND
 .inc "zasm/instr.asm"
 .equ	DIREC_RAMSTART	INS_RAMEND
 .inc "zasm/directive.asm"
 .inc "zasm/parse.asm"
-.inc "zasm/expr.asm"
+.equ	EXPR_PARSE	parseNumberOrSymbol
+.inc "lib/expr.asm"
 .equ	SYM_RAMSTART	DIREC_RAMEND
 .inc "zasm/symbol.asm"
 .equ	ZASM_RAMSTART	SYM_RAMEND
 .inc "zasm/main.asm"
+USER_RAMSTART:

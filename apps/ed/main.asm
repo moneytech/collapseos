@@ -22,31 +22,10 @@
 ; around whenever we add or delete lines. Hopefully, "LDIR" will be our friend
 ; here...
 ;
-; *** Requirements ***
-; BLOCKDEV_SIZE
-; FS_HANDLE_SIZE
-; _blkGetC
-; _blkPutC
-; _blkSeek
-; _blkTell
-; addHL
-; cpHLDE
-; fsFindFN
-; fsOpen
-; fsGetC
-; fsPutC
-; fsSetSize
-; intoHL
-; printstr
-; printcrlf
-; stdioReadLine
-; stdioPutC
-; unsetZ
-;
 ; *** Variables ***
 ;
 .equ	ED_CURLINE	ED_RAMSTART
-.equ	ED_RAMEND	ED_CURLINE+2
+.equ	ED_RAMEND	@+2
 
 edMain:
 	; because ed only takes a single string arg, we can use HL directly

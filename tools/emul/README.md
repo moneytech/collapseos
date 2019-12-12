@@ -12,11 +12,11 @@ After that, you can run `make` and it builds all tools.
 
 ## shell
 
-Running `shell/shell` runs the shell in an emulated machine. The goal of this
-machine is not to simulate real hardware, but rather to serve as a development
-platform. What we do here is we emulate the z80 part, the 64K memory space and
-then hook some fake I/Os to stdin, stdout and a small storage device that is
-suitable for Collapse OS's filesystem to run on.
+Running `shell/shell` runs the BASIC shell in an emulated machine. The goal of
+this machine is not to simulate real hardware, but rather to serve as a
+development platform. What we do here is we emulate the z80 part, the 64K
+memory space and then hook some fake I/Os to stdin, stdout and a small storage
+device that is suitable for Collapse OS's filesystem to run on.
 
 Through that, it becomes easier to develop userspace applications for Collapse
 OS.
@@ -57,3 +57,18 @@ memory starting at address 0 and then run the code until it halts. The exit
 code of the program is the value of `A` when the program halts.
 
 This is used for unit tests.
+
+## Problems?
+
+If the libz80-wrapped zasm executable works badly (hangs, spew garbage, etc.),
+it's probably because you've broken your bootstrap binaries. They're easy to
+mistakenly break. To verify if you've done that, look at your git status. If
+`kernel.bin` or `zasm.bin` are modified, try resetting them and then run
+`make clean all`. Things should go better afterwards.
+
+If that doesn't work, there's also the nuclear option of `git reset --hard`
+and `git clean -fxd`.
+
+If that still doesn't work, it might be because the current commit you're on
+is broken, but that is rather rare: the repo on Github is plugged on Travis
+and it checks that everything is smooth.

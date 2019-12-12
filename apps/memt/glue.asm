@@ -8,13 +8,14 @@
 ;
 ; *** Requirements ***
 ; printstr
-; printHexPair
+; stdioPutC
 ;
 ; *** Includes ***
 
 .inc "user.h"
-.org	USER_CODE
-
 jp	memtMain
 
+.inc "lib/ari.asm"
+.inc "lib/fmt.asm"
 .inc "memt/main.asm"
+USER_RAMSTART:

@@ -20,14 +20,14 @@
 ;
 ; SD card's lowest common denominator in terms of block size is 512 bytes, so
 ; that's what we deal with. To avoid wastefully reading entire blocks from the
-; card for one byte read ops, we buffer the last read block. If a GetC or PutC
+; card for one byte read ops, we buffer the last read block. If a GetB or PutB
 ; operation is within that buffer, then no interaction with the SD card is
 ; necessary.
 ;
-; As soon as a GetC or PutC operation is made that is outside the current
+; As soon as a GetB or PutB operation is made that is outside the current
 ; buffer, we load a new block.
 ;
-; When we PutC, we flag the buffer as "dirty". On the next buffer change (during
+; When we PutB, we flag the buffer as "dirty". On the next buffer change (during
 ; an out-of-buffer request or during an explicit "flush" operation), bytes
 ; currently in the buffer will be written to the SD card.
 ;
@@ -37,10 +37,10 @@
 ; right away, in another file on the same card (zasm), on a different sector.
 ;
 ; If we only have one buffer in this scenario, we'll end up loading a new sector
-; at each GetC/PutC operation and, more importantly, writing a whole block for
+; at each GetB/PutB operation and, more importantly, writing a whole block for
 ; a few bytes each time. This will wear the card prematurely (and be very slow).
 ;
-; With 2 buffers, we solve the problem. Whenever GetC/PutC is called, we first
+; With 2 buffers, we solve the problem. Whenever GetB/PutB is called, we first
 ; look if one of the buffer holds our sector. If not, we see if one of the
 ; buffer is clean (not dirty). If yes, we use this one. If both are dirty or
 ; clean, we use any. This way, as long as writing isn't made to random
@@ -621,10 +621,7 @@ sdcCRC:
 	pop	af
 	ret
 
-; *** shell cmds ***
-
 sdcInitializeCmd:
-	.db	"sdci", 0, 0, 0
 	call	sdcInitialize
 	ret	nz
 	call	.setBlkSize
@@ -678,7 +675,6 @@ sdcInitializeCmd:
 
 ; Flush the current SDC buffer if dirty
 sdcFlushCmd:
-	.db	"sdcf", 0, 0, 0
 	ld	hl, SDC_BUFSEC1
 	ld	(SDC_BUFPTR), hl
 	call	sdcWriteBlk
@@ -721,22 +717,19 @@ _sdcPlaceBuf:
 	xor	a		; ensure Z
 	ret
 
-sdcGetC:
+sdcGetB:
 	push	hl
 	call	_sdcPlaceBuf
-	jr	nz, .error
+	jr	nz, .end	; NZ already set
 
 	; This is it!
 	ld	a, (hl)
 	cp	a		; ensure Z
-	jr	.end
-.error:
-	call	unsetZ
 .end:
 	pop	hl
 	ret
 
-sdcPutC:
+sdcPutB:
 	push	hl
 	push	af		; let's remember the char we put, _sdcPlaceBuf
 				; destroys A.

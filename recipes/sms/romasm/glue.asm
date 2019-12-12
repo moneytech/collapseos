@@ -1,6 +1,11 @@
+; TODO: This recipe has not been tested since its conversion to the BASIC shell.
+; My PS/2 adapter has been acting up and probably has a loose wire. I need to
+; fix it beore I can test this recipe on real hardware.
+; But theoretically, it works...
+
 ; 8K of onboard RAM
 .equ	RAMSTART	0xc000
-.equ	USER_RAMSTART	0xc200
+.equ	USER_CODE	0xd500
 ; Memory register at the end of RAM. Must not overwrite
 .equ	RAMEND		0xddd0
 
@@ -8,13 +13,7 @@
 
 ; *** JUMP TABLE ***
 	jp	strncmp
-	jp	addDE
-	jp	addHL
 	jp	upcase
-	jp	unsetZ
-	jp	intoDE
-	jp	intoHL
-	jp	writeHLinDE
 	jp	findchar
 	jp	parseHex
 	jp	parseHexPair
@@ -22,14 +21,12 @@
 	jp	blkSet
 	jp	fsFindFN
 	jp	fsOpen
-	jp	fsGetC
-	jp	fsPutC
+	jp	fsGetB
+	jp	fsPutB
 	jp	fsSetSize
-	jp	cpHLDE
-	jp	parseArgs
 	jp	printstr
-	jp	_blkGetC
-	jp	_blkPutC
+	jp	_blkGetB
+	jp	_blkPutB
 	jp	_blkSeek
 	jp	_blkTell
 	jp	printcrlf
@@ -40,8 +37,11 @@
 	retn
 
 .inc "err.h"
+.inc "ascii.h"
+.inc "blkdev.h"
+.inc "fs.h"
 .inc "core.asm"
-.inc "parse.asm"
+.inc "str.asm"
 
 .inc "sms/kbd.asm"
 .equ	KBD_RAMSTART	RAMSTART
@@ -52,6 +52,8 @@
 .inc "sms/vdp.asm"
 
 .equ	STDIO_RAMSTART	VDP_RAMEND
+.equ	STDIO_GETC	kbdGetC
+.equ	STDIO_PUTC	vdpPutC
 .inc "stdio.asm"
 
 .equ	MMAP_START	0xd700
@@ -63,29 +65,41 @@
 .equ	BLOCKDEV_COUNT		3
 .inc "blockdev.asm"
 ; List of devices
-.dw	mmapGetC, mmapPutC
-.dw	f0GetC, f0PutC
-.dw	f1GetC, f1PutC
+.dw	mmapGetB, mmapPutB
+.dw	f0GetB, f0PutB
+.dw	f1GetB, f1PutB
 
 
 .equ	FS_RAMSTART	BLOCKDEV_RAMEND
 .equ	FS_HANDLE_COUNT	2
 .inc "fs.asm"
 
-.equ	SHELL_RAMSTART	FS_RAMEND
-.equ	SHELL_EXTRA_CMD_COUNT 10
-.inc "shell.asm"
-.dw	edCmd, zasmCmd, fnewCmd, fdelCmd, fopnCmd, flsCmd, blkBselCmd
-.dw	blkSeekCmd, blkLoadCmd, blkSaveCmd
+; *** BASIC ***
 
-.inc "blockdev_cmds.asm"
-.inc "fs_cmds.asm"
+; RAM space used in different routines for short term processing.
+.equ	SCRATCHPAD_SIZE	0x20
+.equ	SCRATCHPAD	FS_RAMEND
+.inc "lib/util.asm"
+.inc "lib/ari.asm"
+.inc "lib/parse.asm"
+.inc "lib/fmt.asm"
+.equ	EXPR_PARSE	parseLiteralOrVar
+.inc "lib/expr.asm"
+.inc "basic/util.asm"
+.inc "basic/parse.asm"
+.inc "basic/tok.asm"
+.equ	VAR_RAMSTART	SCRATCHPAD+SCRATCHPAD_SIZE
+.inc "basic/var.asm"
+.equ	BUF_RAMSTART	VAR_RAMEND
+.inc "basic/buf.asm"
+.equ	BFS_RAMSTART	BUF_RAMEND
+.inc "basic/fs.asm"
+.inc "basic/blk.asm"
+.equ	BAS_RAMSTART	BFS_RAMEND
+.inc "basic/main.asm"
 
-.equ	PGM_RAMSTART		SHELL_RAMEND
-.equ	PGM_CODEADDR		USER_RAMSTART
-.inc "pgm.asm"
-
-.out	PGM_RAMEND
+; USER_CODE is set according to this output below.
+.out BAS_RAMEND
 
 init:
 	di
@@ -104,9 +118,6 @@ init:
 	ld	a, 'S'
 	ld	(hl), a
 
-	ld	hl, kbdGetC
-	ld	de, vdpPutC
-	call	stdioInit
 	call	fsInit
 	xor	a
 	ld	de, BLOCKDEV_SEL
@@ -116,51 +127,53 @@ init:
 	call	kbdInit
 	call	vdpInit
 
-	call	shellInit
-	ld	hl, pgmShellHook
-	ld	(SHELL_CMDHOOK), hl
-	jp	shellLoop
+	call	basInit
+	ld	hl, basFindCmdExtra
+	ld	(BAS_FINDHOOK), hl
+	jp	basStart
 
-f0GetC:
+basFindCmdExtra:
+	ld	hl, basFSCmds
+	call	basFindCmd
+	ret	z
+	ld	hl, basBLKCmds
+	call	basFindCmd
+	ret	z
+	ld	hl, .mycmds
+	call	basFindCmd
+	ret	z
+	jp	basPgmHook
+.mycmds:
+	.db "ed", 0
+	.dw 0x1e00
+	.db "zasm", 0
+	.dw 0x2300
+	.db 0xff
+
+f0GetB:
 	ld	ix, FS_HANDLES
-	jp	fsGetC
+	jp	fsGetB
 
-f0PutC:
+f0PutB:
 	ld	ix, FS_HANDLES
-	jp	fsPutC
+	jp	fsPutB
 
-f1GetC:
+f1GetB:
 	ld	ix, FS_HANDLES+FS_HANDLE_SIZE
-	jp	fsGetC
+	jp	fsGetB
 
-f1PutC:
+f1PutB:
 	ld	ix, FS_HANDLES+FS_HANDLE_SIZE
-	jp	fsPutC
+	jp	fsPutB
 
-edCmd:
-	.db	"ed", 0, 0, 0b1001, 0, 0
-	push	hl \ pop ix
-	ld	l, (ix)
-	ld	h, (ix+1)
-	jp	0x1900
-
-zasmCmd:
-	.db	"zasm", 0b1001, 0, 0
-	push	hl \ pop ix
-	ld	l, (ix)
-	ld	h, (ix+1)
-	jp	0x1d00
-
-; last time I checked, PC at this point was 0x183c. Let's give us a nice margin
+; last time I checked, PC at this point was 0x1df8. Let's give us a nice margin
 ; for the start of ed.
-.fill 0x1900-$
+.fill 0x1e00-$
 .bin "ed.bin"
 
-; Last check: 0x1c4e
-.fill 0x1d00-$
+; Last check: 0x22dd
+.fill 0x2300-$
 .bin "zasm.bin"
 
 .fill 0x7ff0-$
 .db "TMR SEGA", 0x00, 0x00, 0xfb, 0x68, 0x00, 0x00, 0x00, 0x4c
-
-

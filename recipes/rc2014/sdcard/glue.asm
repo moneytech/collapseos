@@ -2,9 +2,9 @@
 ; The RAM module is selected on A15, so it has the range 0x8000-0xffff
 .equ	RAMSTART	0x8000
 .equ	RAMEND		0xffff
-.equ	PGM_CODEADDR	0x9000
 .equ	ACIA_CTL	0x80	; Control and status. RS off.
 .equ	ACIA_IO		0x81	; Transmit. RS on.
+.equ	USER_CODE	0xa000
 
 jp	init	; 3 bytes
 
@@ -21,39 +21,56 @@ jp	sdcSendRecv
 jp	aciaInt
 
 .inc "err.h"
+.inc "ascii.h"
+.inc "blkdev.h"
+.inc "fs.h"
 .inc "core.asm"
-.inc "parse.asm"
+.inc "str.asm"
 .equ	ACIA_RAMSTART	RAMSTART
 .inc "acia.asm"
 .equ	BLOCKDEV_RAMSTART	ACIA_RAMEND
 .equ	BLOCKDEV_COUNT		2
 .inc "blockdev.asm"
 ; List of devices
-.dw	sdcGetC, sdcPutC
-.dw	blk2GetC, blk2PutC
+.dw	sdcGetB, sdcPutB
+.dw	blk2GetB, blk2PutB
 
 
 .equ	STDIO_RAMSTART	BLOCKDEV_RAMEND
+.equ	STDIO_GETC	aciaGetC
+.equ	STDIO_PUTC	aciaPutC
 .inc "stdio.asm"
 
 .equ	FS_RAMSTART	STDIO_RAMEND
 .equ	FS_HANDLE_COUNT	1
 .inc "fs.asm"
 
-.equ	SHELL_RAMSTART		FS_RAMEND
-.equ	SHELL_EXTRA_CMD_COUNT	11
-.inc "shell.asm"
-.dw	sdcInitializeCmd, sdcFlushCmd
-.dw	blkBselCmd, blkSeekCmd, blkLoadCmd, blkSaveCmd
-.dw	fsOnCmd, flsCmd, fnewCmd, fdelCmd, fopnCmd
+; *** BASIC ***
 
-.inc "blockdev_cmds.asm"
-.inc "fs_cmds.asm"
+; RAM space used in different routines for short term processing.
+.equ	SCRATCHPAD_SIZE	0x20
+.equ	SCRATCHPAD	FS_RAMEND
+.inc "lib/util.asm"
+.inc "lib/ari.asm"
+.inc "lib/parse.asm"
+.inc "lib/fmt.asm"
+.equ	EXPR_PARSE	parseLiteralOrVar
+.inc "lib/expr.asm"
+.inc "basic/util.asm"
+.inc "basic/parse.asm"
+.inc "basic/tok.asm"
+.equ	VAR_RAMSTART	SCRATCHPAD+SCRATCHPAD_SIZE
+.inc "basic/var.asm"
+.equ	BUF_RAMSTART	VAR_RAMEND
+.inc "basic/buf.asm"
+.inc "basic/blk.asm"
+.inc "basic/sdc.asm"
+.equ	BFS_RAMSTART	BUF_RAMEND
+.inc "basic/fs.asm"
+.equ	BAS_RAMSTART	BFS_RAMEND
+.inc "basic/main.asm"
 
-.equ	PGM_RAMSTART		SHELL_RAMEND
-.inc "pgm.asm"
-
-.equ	SDC_RAMSTART	PGM_RAMEND
+.equ	SDC_RAMSTART	BAS_RAMEND
 .equ	SDC_PORT_CSHIGH	6
 .equ	SDC_PORT_CSLOW	5
 .equ	SDC_PORT_SPI	4
@@ -61,32 +78,37 @@ jp	aciaInt
 
 init:
 	di
-	; setup stack
-	ld	hl, RAMEND
-	ld	sp, hl
+	ld	sp, RAMEND
 	im	1
 	call	aciaInit
-	ld	hl, aciaGetC
-	ld	de, aciaPutC
-	call	stdioInit
 	call	fsInit
-	call	shellInit
-	ld	hl, pgmShellHook
-	ld	(SHELL_CMDHOOK), hl
+	call	basInit
+	ld	hl, basFindCmdExtra
+	ld	(BAS_FINDHOOK), hl
 
 	xor	a
 	ld	de, BLOCKDEV_SEL
 	call	blkSel
 
 	ei
-	jp	shellLoop
+	jp	basStart
+
+basFindCmdExtra:
+	ld	hl, basFSCmds
+	call	basFindCmd
+	ret	z
+	ld	hl, basBLKCmds
+	call	basFindCmd
+	ret	z
+	ld	hl, basSDCCmds
+	jp	basFindCmd
 
 ; *** blkdev 2: file handle 0 ***
 
-blk2GetC:
+blk2GetB:
 	ld	ix, FS_HANDLES
-	jp	fsGetC
+	jp	fsGetB
 
-blk2PutC:
+blk2PutB:
 	ld	ix, FS_HANDLES
-	jp	fsPutC
+	jp	fsPutB

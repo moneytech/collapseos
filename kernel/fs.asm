@@ -3,7 +3,7 @@
 ; Collapse OS filesystem (CFS) is not made to be convenient, but to be simple.
 ; This is little more than "named storage blocks". Characteristics:
 ;
-; * a filesystem sits upon a blockdev. It needs GetC, PutC, Seek.
+; * a filesystem sits upon a blockdev. It needs GetB, PutB, Seek.
 ; * No directory. Use filename prefix to group.
 ; * First block of each file has metadata. Others are raw data.
 ; * No FAT. Files are a chain of blocks of a predefined size. To enumerate
@@ -76,21 +76,7 @@
 ; *** DEFINES ***
 ; Number of handles we want to support
 ; FS_HANDLE_COUNT
-; *** CONSTS ***
-.equ	FS_MAX_NAME_SIZE	0x1a
-.equ	FS_BLOCKSIZE		0x100
-.equ	FS_METASIZE		0x20
-
-.equ	FS_META_ALLOC_OFFSET	3
-.equ	FS_META_FSIZE_OFFSET	4
-.equ	FS_META_FNAME_OFFSET	6
-; Size in bytes of a FS handle:
-; * 4 bytes for starting offset of the FS block
-; * 2 bytes for file size
-.equ	FS_HANDLE_SIZE		6
-.equ	FS_ERR_NO_FS		0x5
-.equ	FS_ERR_NOT_FOUND	0x6
-
+;
 ; *** VARIABLES ***
 ; A copy of BLOCKDEV_SEL when the FS was mounted. 0 if no FS is mounted.
 .equ	FS_BLK		FS_RAMSTART
@@ -98,12 +84,12 @@
 ; This pointer is 32 bits. 32 bits pointers are a bit awkward: first two bytes
 ; are high bytes *low byte first*, and then the low two bytes, same order.
 ; When loaded in HL/DE, the four bytes are loaded in this order: E, D, L, H
-.equ	FS_START	FS_BLK+BLOCKDEV_SIZE
+.equ	FS_START	@+BLOCKDEV_SIZE
 ; This variable below contain the metadata of the last block we moved
 ; to. We read this data in memory to avoid constant seek+read operations.
-.equ	FS_META		FS_START+4
-.equ	FS_HANDLES	FS_META+FS_METASIZE
-.equ	FS_RAMEND	FS_HANDLES+FS_HANDLE_COUNT*FS_HANDLE_SIZE
+.equ	FS_META		@+4
+.equ	FS_HANDLES	@+FS_METASIZE
+.equ	FS_RAMEND	@+FS_HANDLE_COUNT*FS_HANDLE_SIZE
 
 ; *** DATA ***
 P_FS_MAGIC:
@@ -115,8 +101,7 @@ fsInit:
 	xor	a
 	ld	hl, FS_BLK
 	ld	b, FS_RAMEND-FS_BLK
-	call	fill
-	ret
+	jp	fill
 
 ; *** Navigation ***
 
@@ -300,7 +285,7 @@ fsFindFN:
 	call	fsNext
 	jr	z, .loop
 	; End of the chain, not found
-	call	unsetZ
+	; Z already unset
 .end:
 	pop	de
 	ret
@@ -325,7 +310,7 @@ fsIsValid:
 ; Returns whether current block is deleted in Z flag.
 fsIsDeleted:
 	ld	a, (FS_META+FS_META_FNAME_OFFSET)
-	cp	0	; Z flag is our answer
+	or	a	; Z flag is our answer
 	ret
 
 ; *** blkdev methods ***
@@ -333,10 +318,10 @@ fsIsDeleted:
 ; we can still access the FS even if blkdev selection changes. These routines
 ; below mimic blkdev's methods, but for our private mount.
 
-fsblkGetC:
+fsblkGetB:
 	push	ix
 	ld	ix, FS_BLK
-	call	_blkGetC
+	call	_blkGetB
 	pop	ix
 	ret
 
@@ -347,10 +332,10 @@ fsblkRead:
 	pop	ix
 	ret
 
-fsblkPutC:
+fsblkPutB:
 	push	ix
 	ld	ix, FS_BLK
-	call	_blkPutC
+	call	_blkPutB
 	pop	ix
 	ret
 
@@ -458,27 +443,27 @@ fsSetSize:
 	; cache.
 	ld	a, l
 	ld	(ix+4), a
-	call	fsblkPutC
+	call	fsblkPutB
 	ld	a, h
 	ld	(ix+5), a
-	call	fsblkPutC
+	call	fsblkPutB
 	pop	hl		; <-- lvl 1
 	xor	a	; ensure Z
 	ret
 
 ; Read a byte in handle at (IX) at position HL and put it into A.
 ; Z is set on success, unset if handle is at the end of the file.
-fsGetC:
+fsGetB:
 	call	fsWithinBounds
 	jr	z, .proceed
-	; We want to unset Z, but also return 0 to ensure that a GetC that
+	; We want to unset Z, but also return 0 to ensure that a GetB that
 	; doesn't check Z doesn't end up with false data.
 	xor	a
 	jp	unsetZ		; returns
 .proceed:
 	push	hl
 	call	fsPlaceH
-	call	fsblkGetC
+	call	fsblkGetB
 	cp	a		; ensure Z
 	pop	hl
 	ret
@@ -486,10 +471,10 @@ fsGetC:
 ; Write byte A in handle (IX) at position HL.
 ; Z is set on success, unset if handle is at the end of the file.
 ; TODO: detect end of block alloc
-fsPutC:
+fsPutB:
 	push	hl
 	call	fsPlaceH
-	call	fsblkPutC
+	call	fsblkPutB
 	pop	hl
 	; if HL is out of bounds, increase bounds
 	call	fsWithinBounds
@@ -522,12 +507,9 @@ fsOn:
 	jr	.end
 .error:
 	; couldn't mount. Let's reset our variables.
-	xor	a
-	ld	b, FS_META-FS_BLK	; reset routine pointers and FS ptrs
-	ld	hl, FS_BLK
-	call	fill
-
+	call	fsInit
 	ld	a, FS_ERR_NO_FS
+	or	a	; unset Z
 .end:
 	pop	bc
 	pop	de
@@ -538,17 +520,56 @@ fsOn:
 fsIsOn:
 	; check whether (FS_BLK) is zero
 	push	hl
-	push	de
 	ld	hl, (FS_BLK)
-	ld	de, 0
-	call	cpHLDE
+	ld	a, h
+	or	l
 	jr	nz, .mounted
-	; if equal, it means our FS is not mounted
-	call	unsetZ
+	; not mounted, unset Z
+	inc	a
 	jr	.end
 .mounted:
 	cp	a	; ensure Z
 .end:
-	pop	de
 	pop	hl
+	ret
+
+; Iterate over files in active file system and, for each file, call (IY) with
+; the file's metadata currently placed. HL is set to FS_META.
+; Sets Z on success, unset on error.
+; There are no error condition happening midway. If you get an error, then (IY)
+; was never called.
+fsIter:
+	call	fsBegin
+	ret	nz
+.loop:
+	call	fsIsDeleted
+	ld	hl, FS_META
+	call	nz, callIY
+	call	fsNext
+	jr	z, .loop	; Z set? fsNext was successful
+	cp	a		; ensure Z
+	ret
+
+; Delete currently active file
+; Sets Z on success, unset on error.
+fsDel:
+	call	fsIsValid
+	ret	nz
+	xor	a
+	; Set filename to zero to flag it as deleted
+	ld	(FS_META+FS_META_FNAME_OFFSET), a
+	jp	fsWriteMeta
+
+; Given a handle index in A, set DE to point to the proper handle.
+fsHandle:
+	ld	de, FS_HANDLES
+	or	a		; cp 0
+	ret	z	; DE already point to correct handle
+	push	bc
+	ld	b, a
+.loop:
+	ld	a, FS_HANDLE_SIZE
+	call	addDE
+	djnz	.loop
+	pop	bc
 	ret

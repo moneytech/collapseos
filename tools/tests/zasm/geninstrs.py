@@ -6,12 +6,6 @@
 
 import sys
 
-# Those lines below are improperly assembled by scas and are skipped by tests.
-BLACKLIST = {
-    "AND (IX)",
-    "AND (IY)",
-}
-
 argspecTbl = {
     'A': "A",
     'B': "B",
@@ -56,6 +50,12 @@ argGrpTbl = {
     chr(0x0b): "BCDEHLA",
 }
 
+# whenever we encounter the "(HL)" version of these instructions, spit IX/IY
+# too.
+instrsWithIXY = {
+    'ADD', 'AND', 'BIT', 'CP', 'DEC', 'INC', 'OR', 'RES', 'RL', 'RR', 'SET',
+    'SRL'}
+
 def cleanupLine(line):
     line = line.strip()
     idx = line.rfind(';')
@@ -78,9 +78,10 @@ def getDbLines(fp, tblname):
     line = fp.readline()
     while line:
         line = cleanupLine(line)
-        if line:
-            if not line.startswith('.db'):
-                break
+        if line == '.db 0xff':
+            break
+        # skip index labels lines
+        if line.startswith('.db'):
             result.append([s.strip() for s in line[4:].split(',')])
         line = fp.readline()
     return result
@@ -107,6 +108,8 @@ def genargs(argspec):
         return result
     if argspec in argspecTbl:
         return [argspecTbl[argspec]]
+    if argspec == chr(0xc): # special BIT "b" group
+        return ['0', '3', '7']
     grp = argGrpTbl[argspec]
     return [argspecTbl[a] for a in grp]
 
@@ -114,11 +117,6 @@ def genargs(argspec):
 def eargs(args):
     newargs = ['$+'+s for s in args[:-1]]
     return newargs + ['$-'+s for s in args[:-1]]
-
-def p(line):
-    if line not in BLACKLIST:
-        print(line)
-
 
 def main():
     asmfile = sys.argv[1]
@@ -131,29 +129,35 @@ def main():
         a2 = eval(row[2])
         args1 = genargs(a1)
         # special case handling
+        if n in instrsWithIXY and a1 == 'l':
+            args1 += genargs('x')
+            args1 += genargs('y')
+
         if n == 'JP' and isinstance(a1, str) and a1 in 'xy':
             # we don't test the displacements for IX/IY because there can't be
             # any.
             args1 = args1[:1]
-        if n in {'BIT', 'SET', 'RES'}:
-            # we only want to keep 1, 2, 4
-            args1 = args1[:3]
         if n in {'JR', 'DJNZ'} and a1 == 'n':
             args1 = eargs(args1)
         if n == 'IM':
             args1 = [0, 1, 2]
+        if n == 'RST':
+            args1 = [i*8 for i in range(8)]
         if args1:
             for arg1 in args1:
                 args2 = genargs(a2)
+                if n in instrsWithIXY and a2 == 'l':
+                    args2 += genargs('x')
+                    args2 += genargs('y')
                 if args2:
                     if n in {'JR', 'DJNZ'} and a2 == 'n':
                         args2 = eargs(args2)
                     for arg2 in args2:
-                        p(f"{n} {arg1}, {arg2}")
+                        print(f"{n} {arg1}, {arg2}")
                 else:
-                    p(f"{n} {arg1}")
+                    print(f"{n} {arg1}")
         else:
-            p(n)
+            print(n)
     pass
 
 if __name__ == '__main__':

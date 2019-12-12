@@ -1,8 +1,6 @@
 ; *** Consts ***
 ; Number of rows in the argspec table
 .equ	ARGSPEC_TBL_CNT		33
-; Number of rows in the primary instructions table
-.equ	INSTR_TBL_CNT		162
 ; size in bytes of each row in the primary instructions table
 .equ	INSTR_TBL_ROWSIZE	6
 ; Instruction IDs They correspond to the index of the table in instrNames
@@ -60,13 +58,14 @@
 .equ	I_RRA	0x33
 .equ	I_RRC	0x34
 .equ	I_RRCA	0x35
-.equ	I_SBC	0x36
-.equ	I_SCF	0x37
-.equ	I_SET	0x38
-.equ	I_SLA	0x39
-.equ	I_SRL	0x3a
-.equ	I_SUB	0x3b
-.equ	I_XOR	0x3c
+.equ	I_RST	0x36
+.equ	I_SBC	0x37
+.equ	I_SCF	0x38
+.equ	I_SET	0x39
+.equ	I_SLA	0x3a
+.equ	I_SRL	0x3b
+.equ	I_SUB	0x3c
+.equ	I_XOR	0x3d
 
 ; *** Variables ***
 ; Args are 3 bytes: argspec, then values of numerical constants (when that's
@@ -84,12 +83,18 @@ checkNOrM:
 	cp	'M'
 	ret
 
-; Checks whether A is 'n', 'm', 'x' or 'y'
-checknmxy:
+; Checks whether A is 'n', 'm'
+checknm:
 	cp	'n'
 	ret	z
 	cp	'm'
+	ret
+
+checklxy:
+	cp	'l'
 	ret	z
+; Checks whether A is 'x', 'y'
+checkxy:
 	cp	'x'
 	ret	z
 	cp	'y'
@@ -248,15 +253,12 @@ parseArg:
 
 ; Returns, with Z, whether A is a groupId
 isGroupId:
-	cp	0xc	; max group id + 1
-	jr	nc, .notgroup	; >= 0xc? not a group
-	cp	0
-	jr	z, .notgroup	; 0? not supposed to happen. something's wrong.
+	or	a
+	jp	z, unsetZ	; not a group
+	cp	0xd		; max group id + 1
+	jp	nc, unsetZ	; >= 0xd? not a group
 	; A is a group. ensure Z is set
 	cp	a
-	ret
-.notgroup:
-	call	unsetZ
 	ret
 
 ; Find argspec A in group id H.
@@ -333,11 +335,12 @@ findInGroup:
 	ret
 
 ; Compare argspec from instruction table in A with argument in (HL).
+; IX must point to argspec row.
 ; For constant args, it's easy: if A == (HL), it's a success.
 ; If it's not this, then we check if it's a numerical arg.
 ; If A is a group ID, we do something else: we check that (HL) exists in the
 ; groupspec (argGrpTbl). Moreover, we go and write the group's "value" (index)
-; in (HL+1). This will save us significant processing later in getUpcode.
+; in (HL+1). This will save us significant processing later in spitUpcode.
 ; Set Z according to whether we match or not.
 matchArg:
 	cp	(hl)
@@ -345,11 +348,26 @@ matchArg:
 	; not an exact match. Before we continue: is A zero? Because if it is,
 	; we have to stop right here: no match possible.
 	or	a
-	jr	nz, .checkIfNumber	; not a zero, we can continue
+	jr	nz, .skip1	; not a zero, we can continue
 	; zero, stop here
-	call	unsetZ
+	cp	1			; unset Z
 	ret
-.checkIfNumber:
+.skip1:
+	; If our argspec is 'l', then we also match 'x' and 'y'
+	cp	'l'
+	jr	nz, .skip2
+	; Does it accept IX and IY?
+	bit	4, (ix+3)
+	ld	a, (hl)
+	jp	nz, checkxy	; bit set: our result is checkxy
+	; doesn't accept? then we don't match
+	jp	unsetZ
+.skip2:
+	; Alright, let's start with a special case. Is it part of the special
+	; "BIT" group, 0xc? If yes, we actually expect a number, which will
+	; then be ORed like a regular group index.
+	cp	0xc
+	jr	z, .expectsBIT
 	; not an exact match, let's check for numerical constants.
 	call	upcase
 	call	checkNOrM
@@ -363,6 +381,21 @@ matchArg:
 	cp	(hl)
 	ret			; whether we match or not, the result of Z is
 				; the good one.
+.expectsBIT:
+	ld	a, (hl)
+	cp	'N'
+	inc	hl
+	ld	a, (hl)
+	dec	hl
+	cp	8
+	jr	c, .isBit	; A < 8
+	; not a bit
+	or	a		; unset Z
+	ret
+.isBit:
+	cp	a		; set Z
+	ret
+
 .notNumber:
 	; A bit of a delicate situation here: we want A to go in H but also
 	; (HL) to go in A. If not careful, we overwrite each other. EXX is
@@ -407,103 +440,22 @@ matchPrimaryRow:
 ; *** Special opcodes ***
 ; The special upcode handling routines below all have the same signature.
 ; Instruction row is at IX and we're expected to perform the same task as
-; getUpcode. The number of bytes, however, must go in C instead of A
-; No need to preserve HL, DE, BC and IX: it's handled by getUpcode already.
+; spitUpcode. The number of bytes, however, must go in C instead of A
+; No need to preserve HL, DE, BC and IX: it's handled by spitUpcode already.
 
 ; Handle like a regular "JP (IX+d)" except that we refuse any displacement: if
 ; a displacement is specified, we error out.
-handleJPIX:
-	ld	a, 0xdd
-	jr	handleJPIXY
-handleJPIY:
-	ld	a, 0xfd
 handleJPIXY:
-	ld	(INS_UPCODE), a
 	ld	a, (INS_CURARG1+1)
-	cp	0		; numerical argument *must* be zero
+	or	a		; numerical argument *must* be zero
 	jr	nz, .error
 	; ok, we're good
 	ld	a, 0xe9		; second upcode
-	ld	(INS_UPCODE+1), a
-	ld	c, 2
-	ret
-.error:
-	ld	c, 0
-	ret
-
-; Handle the first argument of BIT. Sets Z if first argument is valid, unset it
-; if there's an error.
-handleBIT:
-	ld	a, (INS_CURARG1+1)
-	cp	8
-	jr	nc, .error	; >= 8? error
-	; We're good
-	cp	a		; ensure Z
-	ret
-.error:
-	ld	c, 0
-	jp	unsetZ
-
-handleBITHL:
-	ld	b, 0b01000110
-	jr	_handleBITHL
-handleSETHL:
-	ld	b, 0b11000110
-	jr	_handleBITHL
-handleRESHL:
-	ld	b, 0b10000110
-_handleBITHL:
-	call	handleBIT
-	ret	nz		; error
-	ld	a, 0xcb		; first upcode
 	ld	(INS_UPCODE), a
-	ld	a, (INS_CURARG1+1)	; 0-7
-	rla
-	rla
-	rla
-	or	b		; 2nd upcode
-	ld	(INS_UPCODE+1), a
-	ld	c, 2
+	ld	c, 1
 	ret
-
-handleBITIX:
-	ld	a, 0xdd
-	ld	b, 0b01000110
-	jr	_handleBITIXY
-handleBITIY:
-	ld	a, 0xfd
-	ld	b, 0b01000110
-	jr	_handleBITIXY
-handleSETIX:
-	ld	a, 0xdd
-	ld	b, 0b11000110
-	jr	_handleBITIXY
-handleSETIY:
-	ld	a, 0xfd
-	ld	b, 0b11000110
-	jr	_handleBITIXY
-handleRESIX:
-	ld	a, 0xdd
-	ld	b, 0b10000110
-	jr	_handleBITIXY
-handleRESIY:
-	ld	a, 0xfd
-	ld	b, 0b10000110
-_handleBITIXY:
-	ld	(INS_UPCODE), a	; first upcode
-	call	handleBIT
-	ret	nz		; error
-	ld	a, 0xcb		; 2nd upcode
-	ld	(INS_UPCODE+1), a
-	ld	a, (INS_CURARG2+1)	; IXY displacement
-	ld	(INS_UPCODE+2), a
-	ld	a, (INS_CURARG1+1)	; 0-7
-	rla
-	rla
-	rla
-	or	b		; 4th upcode
-	ld	(INS_UPCODE+3), a
-	ld	c, 4
+.error:
+	ld	c, 0
 	ret
 
 handleBITR:
@@ -515,8 +467,6 @@ handleSETR:
 handleRESR:
 	ld	b, 0b10000000
 _handleBITR:
-	call	handleBIT
-	ret	nz		; error
 	; get group value
 	ld	a, (INS_CURARG2+1)	; group value
 	ld	c, a
@@ -525,7 +475,7 @@ _handleBITR:
 	ld	(INS_UPCODE), a
 	; get bit value
 	ld	a, (INS_CURARG1+1)	; 0-7
-	rla
+	rlca	; clears cary if any
 	rla
 	rla
 	; Now we have group value in stack, bit value in A (properly shifted)
@@ -562,58 +512,40 @@ handleIM:
 	ld	c, 2
 	ret
 
-handleLDIXn:
-	ld	a, 0xdd
-	jr	handleLDIXYn
-handleLDIYn:
-	ld	a, 0xfd
 handleLDIXYn:
-	ld	(INS_UPCODE), a
 	ld	a, 0x36		; second upcode
-	ld	(INS_UPCODE+1), a
+	ld	(INS_UPCODE), a
 	ld	a, (INS_CURARG1+1)	; IXY displacement
-	ld	(INS_UPCODE+2), a
+	ld	(INS_UPCODE+1), a
 	ld	a, (INS_CURARG2+1)	; N
-	ld	(INS_UPCODE+3), a
-	ld	c, 4
+	ld	(INS_UPCODE+2), a
+	ld	c, 3
 	ret
 
-handleLDIXr:
-	ld	a, 0xdd
-	jr	handleLDIXYr
-handleLDIYr:
-	ld	a, 0xfd
 handleLDIXYr:
-	ld	(INS_UPCODE), a
 	ld	a, (INS_CURARG2+1)	; group value
 	or	0b01110000	; second upcode
-	ld	(INS_UPCODE+1), a
+	ld	(INS_UPCODE), a
 	ld	a, (INS_CURARG1+1)	; IXY displacement
-	ld	(INS_UPCODE+2), a
-	ld	c, 3
+	ld	(INS_UPCODE+1), a
+	ld	c, 2
 	ret
 
-handleLDrIX:
-	ld	a, 0xdd
-	jr	handleLDrIXY
-handleLDrIY:
-	ld	a, 0xfd
 handleLDrIXY:
-	ld	(INS_UPCODE), a
 	ld	a, (INS_CURARG1+1)	; group value
-	rla \ rla \ rla
+	rlca \ rla \ rla
 	or	0b01000110	; second upcode
-	ld	(INS_UPCODE+1), a
+	ld	(INS_UPCODE), a
 	ld	a, (INS_CURARG2+1)	; IXY displacement
-	ld	(INS_UPCODE+2), a
-	ld	c, 3
+	ld	(INS_UPCODE+1), a
+	ld	c, 2
 	ret
 
 handleLDrr:
 	; first argument is displaced by 3 bits, second argument is not
 	; displaced and we or that with a leading 0b01000000
 	ld	a, (INS_CURARG1+1)	; group value
-	rla
+	rlca
 	rla
 	rla
 	ld	c, a		; store it
@@ -624,12 +556,28 @@ handleLDrr:
 	ld	c, 1
 	ret
 
+handleRST:
+	ld	a, (INS_CURARG1+1)
+	; verify that A is either 0x08, 0x10, 0x18, 0x20, 0x28, 0x30 or 0x38.
+	; Good news: the relevant bits (bits 5:3) are already in place. We only
+	; have to verify that they're surrounded by zeroes.
+	ld	c, 0b11000111
+	and	c
+	jr	nz, .error
+	; We're in range. good.
+	ld	a, (INS_CURARG1+1)
+	or	c
+	ld	(INS_UPCODE), a
+	ld	c, 1
+	ret
+.error:
+	ld	c, 0
+	ret
+
 ; Compute the upcode for argspec row at (DE) and arguments in curArg{1,2} and
-; writes the resulting upcode in INS_UPCODE. A is the number if bytes written
-; to INS_UPCODE.
-; A is zero on error. The only thing that can go wrong in this routine is
-; overflow.
-getUpcode:
+; writes the resulting upcode to IO.
+; A is zero, with Z set, on success. A is non-zero, with Z unset, on error.
+spitUpcode:
 	push	ix
 	push	de
 	push	hl
@@ -637,6 +585,39 @@ getUpcode:
 	; First, let's go in IX mode. It's easier to deal with offsets here.
 	push	de \ pop ix
 
+	; before we begin, are we in a 'l' argspec? Is it flagged for IX/IY
+	; acceptance? If yes, a 'x' or 'y' instruction? Check this on both
+	; args and if we detect a 'x' or 'y', things are *always* the same:
+	; the upcode is exactly the same as its (HL) counterpart except that
+	; it is preceeded by 0xdd or 0xfd. If we're 'x' or 'y', then it means
+	; that we've already been matched to a 'l' argspec, so after spitting
+	; 0xdd or 0xfd, we can continue as normal.
+	ld	a, (ix+1)
+	call	checklxy
+	jr	z, .isl
+	ld	a, (ix+2)
+	call	checklxy
+	jr	nz, .begin		; no point in checking further.
+.isl:
+	ld	a, (INS_CURARG1)
+	cp	'x'
+	jr	z, .isx
+	cp	'y'
+	jr	z, .isy
+	ld	a, (INS_CURARG2)
+	cp	'x'
+	jr	z, .isx
+	cp	'y'
+	jr	z, .isy
+	jr	.begin
+.isx:
+	ld	a, 0xdd
+	call	ioPutB
+	jr	.begin
+.isy:
+	ld	a, 0xfd
+	call	ioPutB
+.begin:
 	; Are we a "special instruction"?
 	bit	5, (ix+3)
 	jr	z, .normalInstr		; not set: normal instruction
@@ -645,16 +626,15 @@ getUpcode:
 	ld	h, (ix+5)
 	call	callHL
 	; We have our result written in INS_UPCODE and C is set.
-	jp	.end
+	jp	.writeIO
 
 .normalInstr:
 	; we begin by writing our "base upcode", which can be one or two bytes
 	ld	a, (ix+4)	; first upcode
 	ld	(INS_UPCODE), a
-	ld	de, INS_UPCODE	; from this point, DE points to "where we are"
-				; in terms of upcode writing.
-	inc	de		; make DE point to where we should write next.
-
+	; from this point, DE points to "where we are" in terms of upcode
+	; writing.
+	ld	de, INS_UPCODE+1
 	ld	c, 1		; C holds our upcode count
 
 	; Now, let's determine if we have one or two upcode. As a general rule,
@@ -725,16 +705,22 @@ getUpcode:
 	ld	hl, INS_CURARG1
 	call	checkNOrM
 	jr	z, .withWord
-	call	checknmxy
+	call	checknm
+	jr	z, .withByte
+	ld	a, (INS_CURARG1)
+	call	checkxy
 	jr	z, .withByte
 	ld	a, (ix+2)	; second argspec
 	ld	hl, INS_CURARG2
 	call	checkNOrM
 	jr	z, .withWord
-	call	checknmxy
+	call	checknm
+	jr	z, .withByte
+	ld	a, (INS_CURARG2)
+	call	checkxy
 	jr	z, .withByte
 	; nope, no number, alright, we're finished here
-	jr	.end
+	jr	.writeIO
 .withByte:
 	inc	hl
 	; HL points to our number (LSB), with (HL+1) being our MSB which should
@@ -751,7 +737,7 @@ getUpcode:
 	; verification falsely fail.
 	inc	c		; one extra byte is written
 	call	zasmIsFirstPass
-	jr	z, .end
+	jr	z, .writeIO
 
 	; We're on second pass
 	push	de		; Don't let go of this, that's our dest
@@ -781,7 +767,7 @@ getUpcode:
 	or	a		; cp 0
 	jr	nz, .numberTruncated	; if A is anything but zero, we're out
 					; of bounds.
-	jr	.end
+	jr	.writeIO
 
 .absoluteValue:
 	; verify that the MSB in argument is zero
@@ -794,7 +780,7 @@ getUpcode:
 	ldi
 	pop	bc
 	inc	c
-	jr	.end
+	jr	.writeIO
 
 .withWord:
 	inc	hl	; HL now points to LSB
@@ -805,16 +791,54 @@ getUpcode:
 	pop	bc
 	inc	c		; two extra bytes are written
 	inc	c
+	; to writeIO
+.writeIO:
+	; Before we write IO, let's check a very specific case: is our first
+	; upcode 0xcb and our byte count == 3? If yes, then swap the two last
+	; bytes. In all instructions except 0xcb ones, IX/IY displacement comes
+	; last, but in all 0xcb instructions, they come 2nd last.
+	call	.checkCB
+	; Let's write INS_UPCODE to IO
+	dec	c \ inc	c	; is C zero?
+	jr	z, .numberTruncated
+	ld	b, c		; save output byte count
+	ld	hl, INS_UPCODE
+.loopWrite:
+	ld	a, (hl)
+	call	ioPutB
+	jr	nz, .ioError
+	inc	hl
+	djnz	.loopWrite
+	cp	a	; ensure Z
 	jr	.end
 .numberTruncated:
-	; problem: not zero, so value is truncated. error
-	ld	c, 0
+	; Z already unset
+	ld	a, ERR_OVFL
+	jr	.end
+.ioError:
+	; Z already unset
+	ld	a, SHELL_ERR_IO_ERROR
+	; continue to .end
 .end:
-	ld	a, c
 	pop	bc
 	pop	hl
 	pop	de
 	pop	ix
+	ret
+.checkCB:
+	ld	a, (INS_UPCODE)
+	cp	0xcb
+	ret	nz
+	ld	a, c
+	cp	3
+	ret	nz
+	; We are in 0xcb + displacement situation. Swap bytes 2 and 3.
+	ld	a, (INS_UPCODE+1)
+	ex	af, af'
+	ld	a, (INS_UPCODE+2)
+	ld	(INS_UPCODE+1), a
+	ex	af, af'
+	ld	(INS_UPCODE+2), a
 	ret
 
 ; Parse argument in (HL) and place it in (DE)
@@ -866,41 +890,38 @@ parseInstruction:
 	jr	nz, .error	; A is set to error
 .nomorearg:
 	; Parsing done, no error, let's move forward to instr row matching!
+	; To speed up things a little, we use a poor man's indexing. Full
+	; bisecting would involve too much complexity.
+	ld	a, c			; recall A param
 	ld	de, instrTBl
-	ld	b, INSTR_TBL_CNT
+	cp	I_EX
+	jr	c, .loop
+	ld	de, instrTBlEX
+	cp	I_LD
+	jr	c, .loop
+	ld	de, instrTBlLD
+	cp	I_RET
+	jr	c, .loop
+	ld	de, instrTBlRET
 .loop:
 	ld	a, c			; recall A param
 	call	matchPrimaryRow
 	jr	z, .match
 	ld	a, INSTR_TBL_ROWSIZE
 	call	addDE
-	djnz	.loop
+	ld	a, (de)
+	cp	0xff
+	jr	nz, .loop
 	; No signature match
 	ld	a, ERR_BAD_ARG
 	jr	.error
 .match:
 	; We have our matching instruction row. We're getting pretty near our
 	; goal here!
-	call	getUpcode
-	or	a	; is zero?
-	jr	z, .overflow
-	ld	b, a		; save output byte count
-	ld	hl, INS_UPCODE
-.loopWrite:
-	ld	a, (hl)
-	call	ioPutC
-	jr	nz, .ioError
-	inc	hl
-	djnz	.loopWrite
-	cp	a	; ensure Z
-	jr	.end
-.ioError:
-	ld	a, SHELL_ERR_IO_ERROR
-	jr	.error
-.overflow:
-	ld	a, ERR_OVFL
-	jr	.error
+	call	spitUpcode
+	jr	.end		; Z and A set properly, even on error
 .badfmt:
+	; Z already unset
 	ld	a, ERR_BAD_FMT
 .error:
 	; A is set to error already
@@ -983,6 +1004,10 @@ argGrpCC:
 argGrpABCDEHL:
 	.db	"BCDEHL_A"	; 0xb
 
+; SPECIAL GROUP "BIT": 0xc
+; When special group "0xc" shows up in argspec, it means: accept a number
+; between 0 and 7. The value is then treated like a regular group value.
+
 ; Each row is 4 bytes wide, fill with zeroes
 instrNames:
 	.db "ADC", 0
@@ -1039,6 +1064,7 @@ instrNames:
 	.db "RRA", 0
 	.db "RRC", 0
 	.db "RRCA"
+	.db "RST", 0
 	.db "SBC", 0
 	.db "SCF", 0
 	.db "SET", 0
@@ -1069,53 +1095,46 @@ instrNames:
 ; Bit 5: Indicates that this row is handled very specially: the next two bytes
 ; aren't upcode bytes, but a routine address to call to handle this case with
 ; custom code.
+; Bit 4: When in an 'l' argspec, this means "I accept IX and IY variants".
 
+; This table needs to be kept in ascending order of I_* value.
 instrTBl:
 	.db I_ADC, 'A', 'l', 0,    0x8e		, 0	; ADC A, (HL)
 	.db I_ADC, 'A', 0xb, 0,    0b10001000	, 0	; ADC A, r
 	.db I_ADC, 'A', 'n', 0,    0xce		, 0	; ADC A, n
 	.db I_ADC, 'h', 0x3, 0x44, 0xed, 0b01001010	; ADC HL, ss
-	.db I_ADD, 'A', 'l', 0,    0x86		, 0	; ADD A, (HL)
+	.db I_ADD, 'A', 'l', 0x10, 0x86		, 0	; ADD A, (HL) + (IX/Y)
 	.db I_ADD, 'A', 0xb, 0,    0b10000000	, 0	; ADD A, r
 	.db I_ADD, 'A', 'n', 0,    0xc6 	, 0	; ADD A, n
 	.db I_ADD, 'h', 0x3, 4,    0b00001001 	, 0	; ADD HL, ss
 	.db I_ADD, 'X', 0x4, 0x44, 0xdd, 0b00001001	; ADD IX, pp
 	.db I_ADD, 'Y', 0x5, 0x44, 0xfd, 0b00001001	; ADD IY, rr
-	.db I_ADD, 'A', 'x', 0,    0xdd, 0x86	 	; ADD A, (IX+d)
-	.db I_ADD, 'A', 'y', 0,    0xfd, 0x86	 	; ADD A, (IY+d)
-	.db I_AND, 'l', 0,   0,    0xa6		, 0	; AND (HL)
+	.db I_AND, 'l', 0,   0x10, 0xa6		, 0	; AND (HL) + (IX/Y)
 	.db I_AND, 0xb, 0,   0,    0b10100000	, 0	; AND r
 	.db I_AND, 'n', 0,   0,    0xe6		, 0	; AND n
-	.db I_AND, 'x', 0,   0,    0xdd, 0xa6		; AND (IX+d)
-	.db I_AND, 'y', 0,   0,    0xfd, 0xa6		; AND (IY+d)
-	.db I_BIT, 'n', 'l', 0x20 \ .dw handleBITHL	; BIT b, (HL)
-	.db I_BIT, 'n', 'x', 0x20 \ .dw handleBITIX	; BIT b, (IX+d)
-	.db I_BIT, 'n', 'y', 0x20 \ .dw handleBITIY	; BIT b, (IY+d)
-	.db I_BIT, 'n', 0xb, 0x20 \ .dw handleBITR	; BIT b, r
+	.db I_BIT, 0xc, 'l', 0x53, 0xcb, 0b01000110	; BIT b, (HL) + (IX/Y)
+	.db I_BIT, 0xc, 0xb, 0x20 \ .dw handleBITR	; BIT b, r
 	.db I_CALL,0xa, 'N', 3,    0b11000100	, 0	; CALL cc, NN
 	.db I_CALL,'N', 0,   0,    0xcd		, 0	; CALL NN
 	.db I_CCF, 0,   0,   0,    0x3f		, 0	; CCF
-	.db I_CP,  'l', 0,   0,    0xbe		, 0	; CP (HL)
+	.db I_CP,  'l', 0,   0x10, 0xbe		, 0	; CP (HL) + (IX/Y)
 	.db I_CP,  0xb, 0,   0,    0b10111000	, 0	; CP r
 	.db I_CP,  'n', 0,   0,    0xfe		, 0	; CP n
-	.db I_CP,  'x', 0,   0,    0xdd, 0xbe		; CP (IX+d)
-	.db I_CP,  'y', 0,   0,    0xfd, 0xbe		; CP (IY+d)
 	.db I_CPD, 0,   0,   0,    0xed, 0xa9		; CPD
 	.db I_CPDR,0,   0,   0,    0xed, 0xb9		; CPDR
 	.db I_CPI, 0,   0,   0,    0xed, 0xa1		; CPI
 	.db I_CPIR,0,   0,   0,    0xed, 0xb1		; CPIR
 	.db I_CPL, 0,   0,   0,    0x2f		, 0	; CPL
 	.db I_DAA, 0,   0,   0,    0x27		, 0	; DAA
-	.db I_DEC, 'l', 0,   0,    0x35		, 0	; DEC (HL)
+	.db I_DEC, 'l', 0,   0x10, 0x35		, 0	; DEC (HL) + (IX/Y)
 	.db I_DEC, 'X', 0,   0,    0xdd, 0x2b		; DEC IX
-	.db I_DEC, 'x', 0,   0,    0xdd, 0x35		; DEC (IX+d)
 	.db I_DEC, 'Y', 0,   0,    0xfd, 0x2b		; DEC IY
-	.db I_DEC, 'y', 0,   0,    0xfd, 0x35		; DEC (IY+d)
 	.db I_DEC, 0xb, 0,   3,    0b00000101	, 0	; DEC r
 	.db I_DEC, 0x3, 0,   4,    0b00001011	, 0	; DEC ss
 	.db I_DI,  0,   0,   0,    0xf3		, 0	; DI
 	.db I_DJNZ,'n', 0,   0x80, 0x10		, 0	; DJNZ e
 	.db I_EI,  0,   0,   0,    0xfb		, 0	; EI
+instrTBlEX:
 	.db I_EX, 'p', 'h',  0,    0xe3		, 0	; EX (SP), HL
 	.db I_EX, 'p', 'X',  0,    0xdd, 0xe3		; EX (SP), IX
 	.db I_EX, 'p', 'Y',  0,    0xfd, 0xe3		; EX (SP), IY
@@ -1126,27 +1145,26 @@ instrTBl:
 	.db I_IM,  'n', 0,   0x20 \ .dw handleIM	; IM {0,1,2}
 	.db I_IN,  'A', 'm', 0,    0xdb		, 0	; IN A, (n)
 	.db I_IN,  0xb, 'k', 0x43, 0xed, 0b01000000	; IN r, (C)
-	.db I_INC, 'l', 0,   0,    0x34		, 0	; INC (HL)
+	.db I_INC, 'l', 0,   0x10, 0x34		, 0	; INC (HL) + (IX/Y)
 	.db I_INC, 'X', 0,   0,    0xdd , 0x23		; INC IX
-	.db I_INC, 'x', 0,   0,    0xdd , 0x34		; INC (IX+d)
 	.db I_INC, 'Y', 0,   0,    0xfd , 0x23		; INC IY
-	.db I_INC, 'y', 0,   0,    0xfd , 0x34		; INC (IY+d)
 	.db I_INC, 0xb, 0,   3,    0b00000100	, 0	; INC r
 	.db I_INC, 0x3, 0,   4,    0b00000011	, 0	; INC ss
 	.db I_IND, 0,   0,   0,    0xed, 0xaa		; IND
 	.db I_INDR,0,   0,   0,    0xed, 0xba		; INDR
 	.db I_INI, 0,   0,   0,    0xed, 0xa2		; INI
 	.db I_INIR,0,   0,   0,    0xed, 0xb2		; INIR
+	.db I_JP,  'x', 0,   0x20 \ .dw handleJPIXY	; JP (IX)
+	.db I_JP,  'y', 0,   0x20 \ .dw handleJPIXY	; JP (IY)
 	.db I_JP,  'l', 0,   0,    0xe9		, 0	; JP (HL)
 	.db I_JP,  0xa, 'N', 3,    0b11000010	, 0	; JP cc, NN
 	.db I_JP,  'N', 0,   0,    0xc3		, 0	; JP NN
-	.db I_JP,  'x', 0,   0x20 \ .dw handleJPIX	; JP (IX)
-	.db I_JP,  'y', 0,   0x20 \ .dw handleJPIY	; JP (IY)
 	.db I_JR,  'n', 0,   0x80, 0x18		, 0	; JR e
 	.db I_JR,  'C', 'n', 0x80, 0x38		, 0	; JR C, e
 	.db I_JR,  '=', 'n', 0x80, 0x30		, 0	; JR NC, e
 	.db I_JR,  'Z', 'n', 0x80, 0x28		, 0	; JR Z, e
 	.db I_JR,  'z', 'n', 0x80, 0x20		, 0	; JR NZ, e
+instrTBlLD:
 	.db I_LD,  'c', 'A', 0,    0x02		, 0	; LD (BC), A
 	.db I_LD,  'e', 'A', 0,    0x12		, 0	; LD (DE), A
 	.db I_LD,  'A', 'c', 0,    0x0a		, 0	; LD A, (BC)
@@ -1174,23 +1192,21 @@ instrTBl:
 	.db I_LD,  'Y', 'M', 0,    0xfd, 0x2a		; LD IY, (NN)
 	.db I_LD,  'M', 0x3, 0x44, 0xed, 0b01000011	; LD (NN), dd
 	.db I_LD,  0x3, 'M', 0x44, 0xed, 0b01001011	; LD dd, (NN)
-	.db I_LD,  'x', 'n', 0x20 \ .dw handleLDIXn	; LD (IX+d), n
-	.db I_LD,  'y', 'n', 0x20 \ .dw handleLDIYn	; LD (IY+d), n
-	.db I_LD,  'x', 0xb, 0x20 \ .dw handleLDIXr	; LD (IX+d), r
-	.db I_LD,  'y', 0xb, 0x20 \ .dw handleLDIYr	; LD (IY+d), r
-	.db I_LD,  0xb, 'x', 0x20 \ .dw handleLDrIX	; LD r, (IX+d)
-	.db I_LD,  0xb, 'y', 0x20 \ .dw handleLDrIY	; LD r, (IY+d)
+	.db I_LD,  'x', 'n', 0x20 \ .dw handleLDIXYn	; LD (IX+d), n
+	.db I_LD,  'y', 'n', 0x20 \ .dw handleLDIXYn	; LD (IY+d), n
+	.db I_LD,  'x', 0xb, 0x20 \ .dw handleLDIXYr	; LD (IX+d), r
+	.db I_LD,  'y', 0xb, 0x20 \ .dw handleLDIXYr	; LD (IY+d), r
+	.db I_LD,  0xb, 'x', 0x20 \ .dw handleLDrIXY	; LD r, (IX+d)
+	.db I_LD,  0xb, 'y', 0x20 \ .dw handleLDrIXY	; LD r, (IY+d)
 	.db I_LDD, 0,   0,   0,    0xed, 0xa8		; LDD
 	.db I_LDDR,0,   0,   0,    0xed, 0xb8		; LDDR
 	.db I_LDI, 0,   0,   0,    0xed, 0xa0		; LDI
 	.db I_LDIR,0,   0,   0,    0xed, 0xb0		; LDIR
 	.db I_NEG, 0,   0,   0,    0xed, 0x44		; NEG
 	.db I_NOP, 0,   0,   0,    0x00		, 0	; NOP
-	.db I_OR,  'l', 0,   0,    0xb6		, 0	; OR (HL)
+	.db I_OR,  'l', 0,   0x10, 0xb6		, 0	; OR (HL) + (IX/Y)
 	.db I_OR,  0xb, 0,   0,    0b10110000	, 0	; OR r
 	.db I_OR,  'n', 0,   0,    0xf6		, 0	; OR n
-	.db I_OR,  'x', 0,   0,    0xdd, 0xb6		; OR (IX+d)
-	.db I_OR,  'y', 0,   0,    0xfd, 0xb6		; OR (IY+d)
 	.db I_OTDR,0,   0,   0,    0xed, 0xbb		; OTDR
 	.db I_OTIR,0,   0,   0,    0xed, 0xb3		; OTIR
 	.db I_OUT, 'm', 'A', 0,    0xd3		, 0	; OUT (n), A
@@ -1201,35 +1217,37 @@ instrTBl:
 	.db I_PUSH,'X', 0,   0,    0xdd, 0xe5		; PUSH IX
 	.db I_PUSH,'Y', 0,   0,    0xfd, 0xe5		; PUSH IY
 	.db I_PUSH,0x1, 0,   4,    0b11000101	, 0	; PUSH qq
-	.db I_RES, 'n', 'l', 0x20 \ .dw handleRESHL	; RES b, (HL)
-	.db I_RES, 'n', 'x', 0x20 \ .dw handleRESIX	; RES b, (IX+d)
-	.db I_RES, 'n', 'y', 0x20 \ .dw handleRESIY	; RES b, (IY+d)
-	.db I_RES, 'n', 0xb, 0x20 \ .dw handleRESR	; RES b, r
+	.db I_RES, 0xc, 'l', 0x53, 0xcb, 0b10000110	; RES b, (HL) + (IX/Y)
+	.db I_RES, 0xc, 0xb, 0x20 \ .dw handleRESR	; RES b, r
+instrTBlRET:
 	.db I_RET, 0,   0,   0,    0xc9		, 0	; RET
 	.db I_RET, 0xa, 0,   3,    0b11000000	, 0	; RET cc
 	.db I_RETI,0,   0,   0,    0xed, 0x4d		; RETI
 	.db I_RETN,0,   0,   0,    0xed, 0x45		; RETN
 	.db I_RL,  0xb, 0,0x40,    0xcb, 0b00010000	; RL r
+	.db I_RL,  'l', 0,0x10,    0xcb, 0b00010110	; RL (HL) + (IX/Y)
 	.db I_RLA, 0,   0,   0,    0x17		, 0	; RLA
 	.db I_RLC, 0xb, 0,0x40,    0xcb, 0b00000000	; RLC r
 	.db I_RLCA,0,   0,   0,    0x07		, 0	; RLCA
 	.db I_RR,  0xb, 0,0x40,    0xcb, 0b00011000	; RR r
+	.db I_RR,  'l', 0,0x10,    0xcb, 0b00011110	; RR (HL) + (IX/Y)
 	.db I_RRA, 0,   0,   0,    0x1f		, 0	; RRA
 	.db I_RRC, 0xb, 0,0x40,    0xcb, 0b00001000	; RRC r
 	.db I_RRCA,0,   0,   0,    0x0f		, 0	; RRCA
+	.db I_RST, 'n', 0, 0x20 \ .dw handleRST		; RST p
 	.db I_SBC, 'A', 'l', 0,    0x9e		, 0	; SBC A, (HL)
 	.db I_SBC, 'A', 0xb, 0,    0b10011000	, 0	; SBC A, r
 	.db I_SBC,'h',0x3,0x44,    0xed, 0b01000010	; SBC HL, ss
 	.db I_SCF, 0,   0,   0,    0x37		, 0	; SCF
-	.db I_SET, 'n', 'l', 0x20 \ .dw handleSETHL	; SET b, (HL)
-	.db I_SET, 'n', 'x', 0x20 \ .dw handleSETIX	; SET b, (IX+d)
-	.db I_SET, 'n', 'y', 0x20 \ .dw handleSETIY	; SET b, (IY+d)
-	.db I_SET, 'n', 0xb, 0x20 \ .dw handleSETR	; SET b, r
+	.db I_SET, 0xc, 'l', 0x53, 0xcb, 0b11000110	; SET b, (HL) + (IX/Y)
+	.db I_SET, 0xc, 0xb, 0x20 \ .dw handleSETR	; SET b, r
 	.db I_SLA, 0xb, 0,0x40,    0xcb, 0b00100000	; SLA r
 	.db I_SRL, 0xb, 0,0x40,    0xcb, 0b00111000	; SRL r
+	.db I_SRL, 'l', 0,0x10,    0xcb, 0b00111110	; SRL (HL) + (IX/Y)
 	.db I_SUB, 'l', 0,   0,    0x96		, 0	; SUB (HL)
 	.db I_SUB, 0xb, 0,   0,    0b10010000	, 0	; SUB r
 	.db I_SUB, 'n', 0,   0,    0xd6 	, 0	; SUB n
 	.db I_XOR, 'l', 0,   0,    0xae		, 0	; XOR (HL)
 	.db I_XOR, 0xb, 0,   0,    0b10101000	, 0	; XOR r
 	.db I_XOR, 'n', 0,   0,    0xee		, 0	; XOR n
+	.db 0xff

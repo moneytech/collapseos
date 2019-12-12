@@ -4,39 +4,52 @@ KERNEL = ../../kernel
 APPS = ../../apps
 ZASMBIN = zasm/zasm
 ZASMSH = ../zasm.sh
-SHELLAPPS = $(addprefix cfsin/, zasm ed)
-CFSIN_CONTENTS = $(SHELLAPPS) cfsin/user.h
+SHELLAPPS = zasm ed
+SHELLTGTS = ${SHELLAPPS:%=cfsin/%}
+CFSIN_CONTENTS = $(SHELLTGTS) cfsin/user.h
+OBJS = emul.o libz80/libz80.o
 
 .PHONY: all
 all: $(TARGETS) $(CFSIN_CONTENTS)
 
-shell/kernel-bin.h: shell/shell_.asm $(ZASMBIN)
-	$(ZASMSH) $(KERNEL) < $< | ./bin2c.sh KERNEL | tee $@ > /dev/null
+# -o in sync with SHELL_CODE in shell/glue.asm
+shell/shell.bin: shell/glue.asm $(ZASMBIN)
+	$(ZASMSH) $(KERNEL) shell/user.h $(APPS) < shell/glue.asm | tee $@ > /dev/null
+
+shell/shell-bin.h: shell/shell.bin
+	./bin2c.sh KERNEL < shell/shell.bin | tee $@ > /dev/null
 
 zasm/kernel-bin.h: zasm/kernel.bin
-	./bin2c.sh KERNEL < $< | tee $@ > /dev/null
+	./bin2c.sh KERNEL < zasm/kernel.bin | tee $@ > /dev/null
 
 zasm/zasm-bin.h: zasm/zasm.bin
-	./bin2c.sh USERSPACE < $< | tee $@ > /dev/null
+	./bin2c.sh USERSPACE < zasm/zasm.bin | tee $@ > /dev/null
 
-shell/shell: shell/shell.c libz80/libz80.o shell/kernel-bin.h 
-$(ZASMBIN): zasm/zasm.c libz80/libz80.o zasm/kernel-bin.h zasm/zasm-bin.h $(CFSPACK)
-runbin/runbin: runbin/runbin.c libz80/libz80.o
-$(TARGETS):
-	$(CC) $< libz80/libz80.o -o $@
+shell/shell: shell/shell.c $(OBJS) shell/shell-bin.h 
+	$(CC) shell/shell.c $(OBJS) -o $@
+
+$(ZASMBIN): zasm/zasm.c $(OBJS) zasm/kernel-bin.h zasm/zasm-bin.h $(CFSPACK)
+	$(CC) zasm/zasm.c $(OBJS) -o $@
+
+runbin/runbin: runbin/runbin.c $(OBJS)
+	$(CC) runbin/runbin.c $(OBJS) -o $@
 
 libz80/libz80.o: libz80/z80.c
 	$(MAKE) -C libz80/codegen opcodes
 	$(CC) -Wall -ansi -g -c -o libz80/libz80.o libz80/z80.c
 
+emul.o: emul.c
+	$(CC) -c -o emul.o emul.c
+
 $(CFSPACK):
 	$(MAKE) -C ../cfspack
 
-$(SHELLAPPS): $(ZASMBIN)
-	$(ZASMSH) $(KERNEL) $(APPS) shell/user.h < $(APPS)/$(notdir $@)/glue.asm > $@
+# -o in sync with USER_CODE in shell/user.h
+$(SHELLTGTS): $(ZASMBIN)
+	$(ZASMSH) -o 42 $(KERNEL) $(APPS) shell/user.h < $(APPS)/${@:cfsin/%=%}/glue.asm > $@
 
 cfsin/user.h: shell/user.h
-	cp $< $@
+	cp shell/user.h $@
 
 .PHONY: updatebootstrap
 updatebootstrap: $(ZASMBIN) $(INCCFS)
@@ -45,4 +58,4 @@ updatebootstrap: $(ZASMBIN) $(INCCFS)
 
 .PHONY: clean
 clean:
-	rm -f $(TARGETS) $(SHELLAPPS) {zasm,shell}/*-bin.h
+	rm -f $(TARGETS) $(SHELLTGTS) emul.o zasm/*-bin.h shell/*-bin.h

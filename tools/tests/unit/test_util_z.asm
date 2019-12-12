@@ -1,7 +1,8 @@
 jp	test
 
 .inc "core.asm"
-.inc "parse.asm"
+.inc "str.asm"
+.inc "lib/util.asm"
 .inc "zasm/util.asm"
 
 testNum:	.db 1
@@ -10,14 +11,6 @@ sFoo:		.db "foo", 0
 test:
 	ld	hl, 0xffff
 	ld	sp, hl
-
-	ld	de, 12
-	ld	bc, 4
-	call	multDEBC
-	ld	a, l
-	cp	48
-	jp	nz, fail
-	call	nexttest
 
 	ld	hl, sFoo
 	call	strlen

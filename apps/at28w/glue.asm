@@ -9,16 +9,19 @@
 ; is reached on the block device.
 
 ; *** Requirements ***
-; blkGetC
-; parseArgs
+; blkGetB
 ;
 ; *** Includes ***
 
 .inc "user.h"
 .inc "err.h"
-.org	USER_CODE
 .equ	AT28W_RAMSTART	USER_RAMSTART
 
 jp	at28wMain
 
+.inc "core.asm"
+.inc "lib/util.asm"
+.inc "lib/parse.asm"
+.inc "lib/args.asm"
 .inc "at28w/main.asm"
+USER_RAMSTART:

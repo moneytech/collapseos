@@ -10,15 +10,17 @@
 jp	test
 
 .inc "core.asm"
-.inc "parse.asm"
+.inc "str.asm"
 .inc "lib/util.asm"
+.inc "lib/ari.asm"
 .inc "zasm/util.asm"
 .inc "zasm/const.asm"
 .inc "lib/parse.asm"
 .inc "zasm/parse.asm"
 .equ	SYM_RAMSTART	DIREC_LASTVAL+2
 .inc "zasm/symbol.asm"
-.inc "zasm/expr.asm"
+.equ	EXPR_PARSE	parseNumberOrSymbol
+.inc "lib/expr.asm"
 
 ; Pretend that we aren't in first pass
 zasmIsFirstPass:
@@ -40,9 +42,9 @@ sFOO:		.db "FOO", 0
 sBAR:		.db "BAR", 0
 
 test:
-	ld	hl, 0xffff
-	ld	sp, hl
+	ld	sp, 0xffff
 
+	; Old-style tests, not touching them now.
 	ld	hl, s1
 	call	parseExpr
 	jp	nz, fail
@@ -126,9 +128,69 @@ test:
 	jp	nz, fail
 	call	nexttest
 
+	; New-style tests
+	call	testParseExpr
 	; success
 	xor	a
 	halt
+
+testParseExpr:
+	ld	iy, .t1
+	call	.testEQ
+	ld	iy, .t2
+	call	.testEQ
+	ld	iy, .t3
+	call	.testEQ
+	ld	iy, .t4
+	call	.testEQ
+	ld	iy, .t5
+	call	.testEQ
+	ld	iy, .t6
+	call	.testEQ
+	ld	iy, .t7
+	call	.testEQ
+	ld	iy, .t8
+	call	.testEQ
+	ret
+
+.testEQ:
+	push	iy \ pop hl
+	inc	hl \ inc hl
+	call	parseExpr
+	jp	nz, fail
+	push	ix \ pop de
+	ld	a, e
+	cp	(iy)
+	jp	nz, fail
+	ld	a, d
+	cp	(iy+1)
+	jp	nz, fail
+	jp	nexttest
+
+.t1:
+	.dw	7
+	.db	"42/6", 0
+.t2:
+	.dw	1
+	.db	"7%3", 0
+.t3:
+	.dw	0x0907
+	.db	"0x99f7&0x0f0f", 0
+.t4:
+	.dw	0x9fff
+	.db	"0x99f7|0x0f0f", 0
+.t5:
+	.dw	0x96f8
+	.db	"0x99f7^0x0f0f", 0
+.t6:
+	.dw	0x133e
+	.db	"0x99f7}3", 0
+.t7:
+	.dw	0xcfb8
+	.db	"0x99f7{3", 0
+.t8:
+	.dw	0xffff
+	.db	"-1", 0
 
 nexttest:
 	ld	a, (testNum)

@@ -1,0 +1,4 @@
+*.o
+/memdump
+/blkdump
+/upload

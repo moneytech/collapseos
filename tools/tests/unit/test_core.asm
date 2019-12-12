@@ -1,8 +1,16 @@
+.equ foo 456	; AFTER_ORG should not get that value
+.org 0x1234
+.equ AFTER_ORG	@
+.org 0
+
 jp	test
 
 .inc "core.asm"
 
+dummyLabel:
 testNum:	.db 1
+
+.equ	dummyLabel	0x42
 
 test:
 	ld	hl, 0xffff
@@ -30,37 +38,17 @@ test:
 	jp	p, fail		; negative
 	call	nexttest
 
-	; *** subHL ***
-	ld	hl, 0x123
-	ld	a, 0x25
-	call	subHL
-	ld	a, h
-	cp	0
-	jp	nz, fail
-	ld	a, l
-	cp	0xfe
+	; Test that .equ can override label
+	ld	a, 0x42
+	ld	hl, dummyLabel
+	cp	l
 	jp	nz, fail
 	call	nexttest
 
-	ld	hl, 0x125
-	ld	a, 0x23
-	call	subHL
-	ld	a, h
-	cp	1
-	jp	nz, fail
-	ld	a, l
-	cp	0x02
-	jp	nz, fail
-	call	nexttest
-
-	ld	hl, 0x125
-	ld	a, 0x25
-	call	subHL
-	ld	a, h
-	cp	1
-	jp	nz, fail
-	ld	a, l
-	cp	0
+	; test that "@" is updated by a .org directive
+	ld	hl, AFTER_ORG
+	ld	de, 0x1234
+	call	cpHLDE
 	jp	nz, fail
 	call	nexttest
 
@@ -97,3 +85,4 @@ nexttest:
 fail:
 	ld	a, (testNum)
 	halt
+

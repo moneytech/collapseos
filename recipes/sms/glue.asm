@@ -9,8 +9,9 @@
 	retn
 
 .inc "err.h"
+.inc "ascii.h"
 .inc "core.asm"
-.inc "parse.asm"
+.inc "str.asm"
 
 .equ	PAD_RAMSTART	RAMSTART
 .inc "sms/pad.asm"
@@ -19,11 +20,30 @@
 .inc "sms/vdp.asm"
 
 .equ	STDIO_RAMSTART	VDP_RAMEND
+.equ	STDIO_GETC	padGetC
+.equ	STDIO_PUTC	vdpPutC
 .inc "stdio.asm"
 
-.equ	SHELL_RAMSTART	STDIO_RAMEND
-.equ	SHELL_EXTRA_CMD_COUNT 0
-.inc "shell.asm"
+; *** BASIC ***
+
+; RAM space used in different routines for short term processing.
+.equ	SCRATCHPAD_SIZE	0x20
+.equ	SCRATCHPAD	STDIO_RAMEND
+.inc "lib/util.asm"
+.inc "lib/ari.asm"
+.inc "lib/parse.asm"
+.inc "lib/fmt.asm"
+.equ	EXPR_PARSE	parseLiteralOrVar
+.inc "lib/expr.asm"
+.inc "basic/util.asm"
+.inc "basic/parse.asm"
+.inc "basic/tok.asm"
+.equ	VAR_RAMSTART	SCRATCHPAD+SCRATCHPAD_SIZE
+.inc "basic/var.asm"
+.equ	BUF_RAMSTART	VAR_RAMEND
+.inc "basic/buf.asm"
+.equ	BAS_RAMSTART	BUF_RAMEND
+.inc "basic/main.asm"
 
 init:
 	di
@@ -33,16 +53,8 @@ init:
 
 	call	padInit
 	call	vdpInit
-	ld	hl, padUpdateSel
-	ld	(VDP_CHRSELHOOK), hl
-
-	ld	hl, padGetC
-	ld	de, vdpPutC
-	call	stdioInit
-	call	shellInit
-	ld	hl, vdpShellLoopHook
-	ld	(SHELL_LOOPHOOK), hl
-	jp	shellLoop
+	call	basInit
+	jp	basStart
 
 .fill 0x7ff0-$
 .db "TMR SEGA", 0x00, 0x00, 0xfb, 0x68, 0x00, 0x00, 0x00, 0x4c

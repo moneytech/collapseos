@@ -1,7 +1,10 @@
 /shell/shell
+/bshell/shell
 /zasm/zasm
 /runbin/runbin
 /*/*-bin.h
+/*/*.bin
 /cfsin/zasm
 /cfsin/ed
+/cfsin/basic
 /cfsin/user.h

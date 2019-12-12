@@ -1,11 +1,11 @@
 ; classic RC2014 setup (8K ROM + 32K RAM) and a stock Serial I/O module
 ; The RAM module is selected on A15, so it has the range 0x8000-0xffff
 .equ	RAMSTART	0x8000
-; kernel RAM usage, because of SDC, is a bit high and bring us almost to 0x8500
-; We allocate at least 0x200 bytes for the stack, which is why we have this
+; Kernel RAMEND last check: 0x98f3
+; We allocate at least 0x100 bytes for the stack, which is why we have this
 ; threshold.
-.equ	RAMEND		0x8700
-.equ	PGM_CODEADDR	RAMEND
+.equ	RAMEND		0x9a00
+.equ	USER_CODE	RAMEND  ; in sync with user.h
 .equ	ACIA_CTL	0x80	; Control and status. RS off.
 .equ	ACIA_IO		0x81	; Transmit. RS on.
 
@@ -13,78 +13,83 @@
 
 ; *** Jump Table ***
 	jp	strncmp
-	jp	addDE
-	jp	addHL
 	jp	upcase
-	jp	unsetZ
-	jp	intoDE
-	jp	intoHL
-	jp	writeHLinDE
 	jp	findchar
-	jp	parseHex
-	jp	parseHexPair
 	jp	blkSel
 	jp	blkSet
 	jp	fsFindFN
 	jp	fsOpen
-	jp	fsGetC
-	jp	cpHLDE		; approaching 0x38...
+	jp	fsGetB
+	jp	printstr
+	jp	_blkGetB
+	jp	_blkPutB
+	jp	_blkSeek
+	jp	_blkTell
+	jp	sdcGetB
+	jp	sdcPutB
+	jp	blkGetB
+	jp	stdioPutC
 
 ; interrupt hook
 .fill	0x38-$
 jp	aciaInt
 
-; *** Jump Table (cont.) ***
-	jp	parseArgs
-	jp	printstr
-	jp	_blkGetC
-	jp	_blkPutC
-	jp	_blkSeek
-	jp	_blkTell
-	jp	printHexPair
-	jp	sdcGetC
-	jp	sdcPutC
-	jp	blkGetC
-
 .inc "err.h"
+.inc "ascii.h"
+.inc "blkdev.h"
+.inc "fs.h"
 .inc "core.asm"
-.inc "parse.asm"
+.inc "str.asm"
 .equ	ACIA_RAMSTART		RAMSTART
 .inc "acia.asm"
 .equ	BLOCKDEV_RAMSTART	ACIA_RAMEND
 .equ	BLOCKDEV_COUNT		4
 .inc "blockdev.asm"
 ; List of devices
-.dw	sdcGetC, sdcPutC
-.dw	blk1GetC, blk1PutC
-.dw	blk2GetC, blk2PutC
-.dw	mmapGetC, mmapPutC
+.dw	sdcGetB, sdcPutB
+.dw	blk1GetB, blk1PutB
+.dw	blk2GetB, blk2PutB
+.dw	mmapGetB, mmapPutB
 
 
 .equ	MMAP_START	0xe000
 .inc "mmap.asm"
 
 .equ	STDIO_RAMSTART	BLOCKDEV_RAMEND
+.equ	STDIO_GETC	aciaGetC
+.equ	STDIO_PUTC	aciaPutC
 .inc "stdio.asm"
 
 .equ	FS_RAMSTART	STDIO_RAMEND
 .equ	FS_HANDLE_COUNT	2
 .inc "fs.asm"
 
-.equ	SHELL_RAMSTART		FS_RAMEND
-.equ	SHELL_EXTRA_CMD_COUNT	11
-.inc "shell.asm"
-.dw	sdcInitializeCmd, sdcFlushCmd
-.dw	blkBselCmd, blkSeekCmd, blkLoadCmd, blkSaveCmd
-.dw	fsOnCmd, flsCmd, fnewCmd, fdelCmd, fopnCmd
+; *** BASIC ***
 
-.inc "fs_cmds.asm"
-.inc "blockdev_cmds.asm"
+; RAM space used in different routines for short term processing.
+.equ	SCRATCHPAD_SIZE	0x20
+.equ	SCRATCHPAD	FS_RAMEND
+.inc "lib/util.asm"
+.inc "lib/ari.asm"
+.inc "lib/parse.asm"
+.inc "lib/fmt.asm"
+.equ	EXPR_PARSE	parseLiteralOrVar
+.inc "lib/expr.asm"
+.inc "basic/util.asm"
+.inc "basic/parse.asm"
+.inc "basic/tok.asm"
+.equ	VAR_RAMSTART	SCRATCHPAD+SCRATCHPAD_SIZE
+.inc "basic/var.asm"
+.equ	BUF_RAMSTART	VAR_RAMEND
+.inc "basic/buf.asm"
+.inc "basic/blk.asm"
+.inc "basic/sdc.asm"
+.equ	BFS_RAMSTART	BUF_RAMEND
+.inc "basic/fs.asm"
+.equ	BAS_RAMSTART	BFS_RAMEND
+.inc "basic/main.asm"
 
-.equ	PGM_RAMSTART	SHELL_RAMEND
-.inc "pgm.asm"
-
-.equ	SDC_RAMSTART	PGM_RAMEND
+.equ	SDC_RAMSTART	BAS_RAMEND
 .equ	SDC_PORT_CSHIGH	6
 .equ	SDC_PORT_CSLOW	5
 .equ	SDC_PORT_SPI	4
@@ -94,42 +99,49 @@ jp	aciaInt
 
 init:
 	di
-	; setup stack
-	ld	hl, RAMEND
-	ld	sp, hl
+	ld	sp, RAMEND
 	im	1
 	call	aciaInit
-	ld	hl, aciaGetC
-	ld	de, aciaPutC
-	call	stdioInit
 	call	fsInit
-	call	shellInit
-	ld	hl, pgmShellHook
-	ld	(SHELL_CMDHOOK), hl
+	call	basInit
+	ld	hl, basFindCmdExtra
+	ld	(BAS_FINDHOOK), hl
 
 	xor	a
 	ld	de, BLOCKDEV_SEL
 	call	blkSel
 
 	ei
-	jp	shellLoop
+	jp	basStart
+
+basFindCmdExtra:
+	ld	hl, basFSCmds
+	call	basFindCmd
+	ret	z
+	ld	hl, basBLKCmds
+	call	basFindCmd
+	ret	z
+	ld	hl, basSDCCmds
+	call	basFindCmd
+	ret	z
+	jp	basPgmHook
 
 ; *** blkdev 1: file handle 0 ***
 
-blk1GetC:
+blk1GetB:
 	ld	ix, FS_HANDLES
-	jp	fsGetC
+	jp	fsGetB
 
-blk1PutC:
+blk1PutB:
 	ld	ix, FS_HANDLES
-	jp	fsPutC
+	jp	fsPutB
 
 ; *** blkdev 2: file handle 1 ***
 
-blk2GetC:
+blk2GetB:
 	ld	ix, FS_HANDLES+FS_HANDLE_SIZE
-	jp	fsGetC
+	jp	fsGetB
 
-blk2PutC:
+blk2PutB:
 	ld	ix, FS_HANDLES+FS_HANDLE_SIZE
-	jp	fsPutC
+	jp	fsPutB

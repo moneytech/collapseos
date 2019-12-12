@@ -3,6 +3,21 @@
 This is probably the most critical part of the Collapse OS project because it
 ensures its self-reproduction.
 
+## Invocation
+
+`zasm` is invoked with 2 mandatory arguments and an optional one. The mandatory
+arguments are input blockdev id and output blockdev id. For example, `zasm 0 1`
+reads source code from blockdev 0, assembles it and spit the result in blockdev
+1.
+
+Input blockdev needs to be seek-able, output blockdev doesn't need to (zasm
+writes in one pass, sequentially.
+
+The 3rd argument, optional, is the initial `.org` value. It's the high byte of
+the value. For example, `zasm 0 1 4f` assembles source in blockdev 0 as if it
+started with the line `.org 0x4f00`. This also means that the initial value of
+the `@` symbol is `0x4f00`.
+
 ## Running on a "modern" machine
 
 To be able to develop zasm efficiently, [libz80][libz80] is used to run zasm
@@ -13,28 +28,13 @@ The resulting `zasm` binary takes asm code in stdin and spits binary in stdout.
 
 ## Literals
 
-There are decimal, hexadecimal and binary literals. A "straight" number is
-parsed as a decimal. Hexadecimal literals must be prefixed with `0x` (`0xf4`).
-Binary must be prefixed with `0b` (`0b01100110`).
+See "Number literals" in `apps/README.md`.
 
-Decimals and hexadecimal are "flexible". Whether they're written in a byte or
-a word, you don't need to prefix them with zeroes. Watch out for overflow,
-however.
-
-Binary literals are also "flexible" (`0b110` is fine), but can't go over a byte.
-
-There is also the char literal (`'X'`), that is, two qutes with a character in
-the middle. The value of that character is interpreted as-is, without any
-encoding involved. That is, whatever binary code is written in between those
-two quotes, it's what is evaluated. Only a single byte at once can be evaluated
-thus. There is no escaping. `'''` results in `0x27`. You can't express a newline
-this way, it's going to mess with the parser.
-
-Then comes our last literal, the string literal. It's a chain of characters
-surrounded by double quotes. Example: `"foo"`. This literal can only be used
-in the `.db` directive and is equivalent to each character being single-quoted
-and separated by commas (`'f', 'o', 'o'`). No null char is inserted in the
-resulting value (unlike what C does).
+On top of common literal logic, zasm also has string literals. It's a chain of
+characters surrounded by double quotes. Example: `"foo"`. This literal can only
+be used in the `.db` directive and is equivalent to each character being
+single-quoted and separated by commas (`'f', 'o', 'o'`). No null char is
+inserted in the resulting value (unlike what C does).
 
 ## Labels
 
@@ -76,14 +76,16 @@ forward-reference labels.
 
 However, they *cannot* forward-reference other constants.
 
+When defining a constant, if the symbol specified has already been defined, no
+error occur and the first value defined stays intact. This allows for "user
+override" of programs.
+
+It's also important to note that constants always override labels, regardless
+of declaration order.
 
 ## Expressions
 
-Wherever a constant is expected, an expression can be written. An expression
-is a bunch of literals or symbols assembled by operators. For now, only `+`, `-`
-and `*` operators are supported. No parenthesis yet.
-
-Expressions can't contain spaces.
+See "Expressions" in `apps/README.md`.
 
 ## The Program Counter
 
@@ -95,7 +97,10 @@ it was placed there.
 
 Whenever a `.equ` directive is evaluated, its resulting value is saved in a
 special "last value" register that can then be used in any expression. This
-is very useful for variable definitions and for jump tables.
+last value is referenced with the `@` special symbol. This is very useful for
+variable definitions and for jump tables.
+
+Note that `.org` also affect the last value.
 
 ## Includes
 
@@ -119,16 +124,17 @@ allowed. An included file cannot have an `.inc` directive.
 
 **.equ**: Binds a symbol named after the first parameter to the value of the
           expression written as the second parameter. Example:
-          `.equ foo 0x42+'A'`
+          `.equ foo 0x42+'A'`. See "Constants" above.
           
-          If the symbol specified has already been defined, no error occur and
-          the first value defined stays intact. This allows for "user override"
-          of programs.
-
 **.fill**: Outputs the number of null bytes specified by its argument, an
            expression. Often used with `$` to fill our binary up to a certain
            offset. For example, if we want to place an instruction exactly at
            byte 0x38, we would precede it with `.fill 0x38-$`.
+
+The maximum value possible for `.fill` is `0xd000`. We do this to
+avoid "overshoot" errors, that is, error where `$` is greater than
+the offset you're trying to reach in an expression like `.fill X-$`
+(such an expression overflows to `0xffff`).
 
 **.org**: Sets the Program Counter to the value of the argument, an expression.
           For example, a label being defined right after a `.org 0x400`, would
